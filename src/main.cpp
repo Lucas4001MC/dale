@@ -50,30 +50,24 @@ class $modify(AIPlayLayer, PlayLayer) {
       return;
 
     double pY = player->getPositionY();
-    double pVelY =
-        player->m_yVelocity; // Note: verify member name, standard is usually
-                             // m_yVelocity or similar in bindings
+    double pVelY = player->m_yVelocity;
 
     // 2. Obstacle Detection
     GameObject *nearestObj = nullptr;
     double minDst = 99999.0;
 
-    // Iterate m_objects (CCArray)
-    CCObject *objRef;
-    CCARRAY_FOREACH(this->m_objects, objRef) {
-      auto obj = typeinfo_cast<GameObject *>(objRef);
-      if (!obj)
-        continue;
+    // Iterate m_objects (CCArray) using Geode v5 CCArrayExt
+    if (this->m_objects) {
+      for (auto obj : CCArrayExt<GameObject *>(this->m_objects)) {
+        if (!obj)
+          continue;
 
-      // Only care about objects in front
-      double dx = obj->getPositionX() - player->getPositionX();
-      if (dx > 0 && dx < minDst) {
-        // Filter for "hazards" or solid blocks.
-        // Simplified: assuming everything in m_objects that is a GameObject is
-        // a potential interaction Ideally check: obj->m_hasHitbox,
-        // obj->getType(), etc. For MVP: Just finding the closest one
-        minDst = dx;
-        nearestObj = obj;
+        // Only care about objects in front
+        double dx = obj->getPositionX() - player->getPositionX();
+        if (dx > 0 && dx < minDst) {
+          minDst = dx;
+          nearestObj = obj;
+        }
       }
     }
 
@@ -84,22 +78,14 @@ class $modify(AIPlayLayer, PlayLayer) {
     if (nearestObj) {
       objDist = minDst;
       objY = nearestObj->getPositionY();
-      // Simple heuristic for type: Spikes usually have specific IDs, but for
-      // generic we'll treat everything as something to pay attention to. If we
-      // can check if it kills (reset), that's better, but hard without diving
-      // deep. Let's assume standard blocks/spikes.
       objType = 1.0;
     } else {
       objDist = 2000.0; // Far away
     }
 
     // 3. Normalize Inputs
-    // Y: 0-1000ish
-    // Vel: -20 to 20ish
-    // Dist: 0-2000
-    std::vector<double> inputs = {pY / 1000.0,
-                                  pVelY / 20.0, // approx scale
-                                  objDist / 1000.0, objY / 1000.0, objType};
+    std::vector<double> inputs = {pY / 1000.0, pVelY / 20.0, objDist / 1000.0,
+                                  objY / 1000.0, objType};
 
     // 4. Feed Forward
     ai::Agent &currentAgent = g_popManager->getCurrentAgent();
@@ -107,9 +93,9 @@ class $modify(AIPlayLayer, PlayLayer) {
 
     // 5. Act
     if (outputs[0] > 0.5) {
-      this->pushButton(0, true); // 0 = Player 1
+      this->m_player1->pushButton(PlayerButton::Jump);
     } else {
-      this->releaseButton(0, true);
+      this->m_player1->releaseButton(PlayerButton::Jump);
     }
   }
 
@@ -150,17 +136,6 @@ class $modify(AIPlayLayer, PlayLayer) {
       g_statusLabel->setString(text.c_str());
     }
 
-    // Reset Level immediately for next agent
-    // We use a delayed call or just rely on existing death effect?
-    // destroyPlayer usually triggers resetLevel eventually.
-    // But to speed it up we might want to force it.
-    // For now, let standard behavior run, but we need to ensure the next agent
-    // is ready when level resets. Actually, standard destroyPlayer allows for
-    // "respawn". In "Practice Mode" it respawns at checkpoint. In Normal, it
-    // restarts level. We probably want "Full Restart" behavior every time for
-    // fair comparison, UNLESS we are doing startPos.
-
-    // Force full reset?
     this->resetLevel();
   }
 };
