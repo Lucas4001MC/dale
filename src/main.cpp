@@ -14,7 +14,6 @@ const int AGENTS_PER_GEN = 50;
 const int INPUT_NODES = 5;
 const int HIDDEN_NODES = 6;
 
-// --- UTILIDADES ---
 float randomFloat(float min, float max) {
   static std::random_device rd;
   static std::mt19937 gen(rd());
@@ -31,9 +30,8 @@ struct Genome {
     weights.clear();
     int totalWeights =
         (INPUT_NODES * HIDDEN_NODES) + (HIDDEN_NODES * 1) + HIDDEN_NODES + 1;
-    for (int i = 0; i < totalWeights; i++) {
+    for (int i = 0; i < totalWeights; i++)
       weights.push_back(randomFloat(-1.0f, 1.0f));
-    }
   }
 
   float predict(const std::vector<float> &inputs) {
@@ -42,17 +40,15 @@ struct Genome {
 
     for (int i = 0; i < HIDDEN_NODES; i++) {
       float sum = 0.0f;
-      for (int j = 0; j < INPUT_NODES; j++) {
+      for (int j = 0; j < INPUT_NODES; j++)
         sum += inputs[j] * weights[wIdx++];
-      }
       sum += weights[wIdx++];
       hiddenOutputs.push_back(sum > 0 ? sum : 0);
     }
 
     float outputSum = 0.0f;
-    for (int i = 0; i < HIDDEN_NODES; i++) {
+    for (int i = 0; i < HIDDEN_NODES; i++)
       outputSum += hiddenOutputs[i] * weights[wIdx++];
-    }
     outputSum += weights[wIdx++];
 
     return outputSum;
@@ -61,11 +57,11 @@ struct Genome {
   void mutate(float rate) {
     for (size_t i = 0; i < weights.size(); i++) {
       if (randomFloat(0.0f, 1.0f) < rate) {
-        weights[i] += randomFloat(-0.3f, 0.3f);
-        if (weights[i] > 3.0f)
-          weights[i] = 3.0f;
-        if (weights[i] < -3.0f)
-          weights[i] = -3.0f;
+        weights[i] += randomFloat(-0.5f, 0.5f);
+        if (weights[i] > 4.0f)
+          weights[i] = 4.0f;
+        if (weights[i] < -4.0f)
+          weights[i] = -4.0f;
       }
     }
   }
@@ -104,6 +100,9 @@ public:
   Genome &getCurrentBrain() {
     if (population.empty())
       initPopulation();
+    // Seguridad extra
+    if (currentAgentIndex >= population.size())
+      currentAgentIndex = 0;
     return population[currentAgentIndex];
   }
 
@@ -119,10 +118,8 @@ public:
         population.begin(), population.end(),
         [](const Genome &a, const Genome &b) { return a.fitness > b.fitness; });
 
-    if (population[0].fitness > globalBest) {
+    if (population[0].fitness > globalBest)
       globalBest = population[0].fitness;
-    }
-
     geode::log::info("Gen {} Finalizada. Best: {}", generation,
                      population[0].fitness);
 
@@ -145,7 +142,7 @@ public:
   }
 };
 
-// --- CONTROLES VELOCIDAD ---
+// --- SPEEDHACK ---
 class $modify(SpeedhackDispatcher, CCKeyboardDispatcher) {
   bool dispatchKeyboardMSG(enumKeyCodes key, bool isDown, bool isRepeat) {
     if (isDown && !isRepeat) {
@@ -165,7 +162,7 @@ class $modify(SpeedhackDispatcher, CCKeyboardDispatcher) {
   }
 };
 
-// --- JUEGO ---
+// --- PLAYLAYER ---
 class $modify(AIPlayLayer, PlayLayer) {
   struct Fields {
     CCLabelBMFont *infoLabel = nullptr;
@@ -178,14 +175,12 @@ class $modify(AIPlayLayer, PlayLayer) {
     auto manager = TrainingManager::get();
     if (manager->population.empty())
       manager->initPopulation();
-
     manager->deadInThisRun = false;
 
     CCScheduler::get()->setTimeScale(
         manager->isWinningRun ? 1.0f : manager->currentSpeed);
 
-    // Usamos chatFont que a veces carga mas rapido, o bigFont
-    auto label = CCLabelBMFont::create("Iniciando...", "bigFont.fnt");
+    auto label = CCLabelBMFont::create("...", "bigFont.fnt");
     label->setPosition({5.0f, CCDirector::get()->getWinSize().height - 5.0f});
     label->setAnchorPoint({0.0f, 1.0f});
     label->setScale(0.4f);
@@ -201,63 +196,64 @@ class $modify(AIPlayLayer, PlayLayer) {
   }
 
   void update(float dt) {
-    // Ejecutamos PlayLayer original primero
-    PlayLayer::update(dt);
+    PlayLayer::update(dt); // Importante llamar al original
 
-    // --- 1. SENSING (VISIÓN) - Lo hacemos SIEMPRE para actualizar el HUD ---
-    float playerX = this->m_player1->getPositionX();
-    float playerY = this->m_player1->getPositionY();
+    auto manager = TrainingManager::get();
+
+    // --- 1. ACTUALIZAR HUD PRIMERO (Para ver si funciona) ---
+    float playerX = 0.0f;
+    float playerY = 0.0f;
+    if (this->m_player1) {
+      playerX = this->m_player1->getPositionX();
+      playerY = this->m_player1->getPositionY();
+    }
+
+    if (m_fields->infoLabel) {
+      std::string text =
+          fmt::format("G:{} A:{}/{}\nX: {:.1f}", manager->generation,
+                      manager->currentAgentIndex + 1, AGENTS_PER_GEN, playerX);
+      m_fields->infoLabel->setString(text.c_str());
+    }
+
+    // Si el jugador está muerto o el sistema bloqueado, salimos
+    if (this->m_player1->m_isDead || manager->deadInThisRun)
+      return;
+
+    // --- 2. DETECCIÓN SEGURA ---
     float distToObstacle = 1000.0f;
     float obstacleY = 0.0f;
 
-    CCObject *objRef;
-    CCARRAY_FOREACH(this->m_objects, objRef) {
-      auto obj = typeinfo_cast<GameObject *>(objRef);
-      if (!obj)
-        continue;
+    if (this->m_objects) {
+      CCObject *objRef;
+      CCARRAY_FOREACH(this->m_objects, objRef) {
+        if (!objRef)
+          continue;
+        auto obj = typeinfo_cast<GameObject *>(objRef);
+        if (!obj)
+          continue;
 
-      if (obj->getPositionX() > playerX) {
-        auto type = obj->getType();
-        // 0 = Solid, 2 = Hazard
-        if (type == GameObjectType::Solid || type == GameObjectType::Hazard) {
-          float dist = obj->getPositionX() - playerX;
-          if (dist < distToObstacle && dist < 400.0f) { // Rango aumentado a 400
-            distToObstacle = dist;
-            obstacleY = obj->getPositionY();
+        // Check simple de posición
+        if (obj->getPositionX() > playerX) {
+          // Check de tipo (Geode v4)
+          auto type = obj->getType();
+          if (type == GameObjectType::Solid || type == GameObjectType::Hazard) {
+            float dist = obj->getPositionX() - playerX;
+            if (dist < distToObstacle && dist < 400.0f) {
+              distToObstacle = dist;
+              obstacleY = obj->getPositionY();
+            }
           }
         }
       }
     }
 
-    // --- 2. ACTUALIZAR HUD (SIEMPRE, incluso si está muerto) ---
-    // Esto soluciona el problema de "Cargando..." eterno
-    auto manager = TrainingManager::get();
-    if (m_fields->infoLabel) {
-      float levelLength =
-          (this->m_levelLength > 0.0f) ? this->m_levelLength : 1000.0f;
-      float bestPct = (manager->globalBest / levelLength) * 100.0f;
-      if (bestPct > 100.0f)
-        bestPct = 100.0f;
-
-      std::string text = fmt::format(
-          "Gen: {} | Agt: {}/{}\nSpd: {}x | Vis: {:.0f}", manager->generation,
-          manager->currentAgentIndex + 1, AGENTS_PER_GEN,
-          (int)manager->currentSpeed, distToObstacle);
-      m_fields->infoLabel->setString(text.c_str());
-    }
-
-    // --- 3. SI ESTÁ MUERTO, PARAMOS AQUÍ ---
-    if (this->m_player1->m_isDead || manager->deadInThisRun)
-      return;
-
-    // --- 4. CEREBRO ---
+    // --- 3. CEREBRO ---
     std::vector<float> inputs = {
         playerY / 1000.0f, distToObstacle / 500.0f, obstacleY / 1000.0f,
         (float)this->m_player1->m_yVelocity / 20.0f, 1.0f};
 
     float output = manager->getCurrentBrain().predict(inputs);
 
-    // Sin restricciones, si quiere saltar, salta.
     if (output > 0.0f) {
       this->m_player1->pushButton(PlayerButton::Jump);
     } else {
@@ -269,36 +265,27 @@ class $modify(AIPlayLayer, PlayLayer) {
     auto manager = TrainingManager::get();
 
     if (player == this->m_player1) {
-
-      // Cerrojo para no procesar la muerte 2 veces en el mismo intento
       if (manager->deadInThisRun) {
         PlayLayer::destroyPlayer(player, object);
         return;
       }
-      manager->deadInThisRun = true;
+      manager->deadInThisRun = true; // Bloqueo inmediato
 
-      // --- LÓGICA DE PROGRESO ---
-      // Guardamos fitness SIEMPRE, incluso si muere al inicio
-      float distance = player->getPositionX();
-      manager->getCurrentBrain().fitness = distance;
-      if (distance > manager->globalBest)
-        manager->globalBest = distance;
-
-      // Pasamos de agente SIEMPRE
-      manager->nextAgent();
-
-      // --- LÓGICA DE REINICIO ---
-      // AQUÍ ESTÁ EL ARREGLO:
-      // Si muere muy pronto (menos de 20 bloques), NO reiniciamos manualmente.
-      // Dejamos que el juego haga su animación de muerte normal.
-      // Esto evita el bucle de "reset spam", pero YA CAMBIAMOS DE AGENTE
-      // arriba.
-      if (distance < 20.0f) {
-        PlayLayer::destroyPlayer(player, object);
+      if (manager->isWinningRun) {
+        manager->isWinningRun = false;
+        CCScheduler::get()->setTimeScale(manager->currentSpeed);
+        Loader::get()->queueInMainThread([this] { this->resetLevel(); });
         return;
       }
 
-      // Si avanzó algo decente, reiniciamos rápido para ahorrar tiempo
+      // Guardar fitness
+      float distance = player->getPositionX();
+      manager->getCurrentBrain().fitness = distance;
+
+      // Pasar al siguiente agente
+      manager->nextAgent();
+
+      // REINICIO
       Loader::get()->queueInMainThread([this] { this->resetLevel(); });
       return;
     }
@@ -310,8 +297,6 @@ class $modify(AIPlayLayer, PlayLayer) {
     auto manager = TrainingManager::get();
     if (!manager->isWinningRun) {
       manager->isWinningRun = true;
-      manager->globalBest =
-          (this->m_levelLength > 0) ? this->m_levelLength : 1000.0f;
       Loader::get()->queueInMainThread([this] { this->resetLevel(); });
       return;
     }
