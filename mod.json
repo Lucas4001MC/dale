@@ -1,0 +1,17 @@
+{
+	"geode": "5.0.0-alpha.1",
+	"gd": {
+		"win": "2.2074",
+		"android": "2.2074",
+		"mac": "2.2074",
+		"ios": "2.2074"
+	},
+	"id": "luca.dasheria",
+	"name": "dasheria",
+	"version": "v1.0.0",
+	"developer": "luca",
+	"description": "reinforcement ia for gd",
+	"dependencies": {
+		"geode.node-ids": ">=v1.20.0"
+	}
+}
