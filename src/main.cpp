@@ -61,11 +61,11 @@ struct Genome {
   void mutate(float rate) {
     for (size_t i = 0; i < weights.size(); i++) {
       if (randomFloat(0.0f, 1.0f) < rate) {
-        weights[i] += randomFloat(-0.2f, 0.2f);
-        if (weights[i] > 2.0f)
-          weights[i] = 2.0f;
-        if (weights[i] < -2.0f)
-          weights[i] = -2.0f;
+        weights[i] += randomFloat(-0.5f, 0.5f); // Aumenté un poco la mutación
+        if (weights[i] > 4.0f)
+          weights[i] = 4.0f;
+        if (weights[i] < -4.0f)
+          weights[i] = -4.0f;
       }
     }
   }
@@ -127,7 +127,8 @@ public:
                      population[0].fitness);
 
     std::vector<Genome> newPop;
-    for (int i = 0; i < 5; i++)
+    // Elitismo: Top 4 pasan intactos
+    for (int i = 0; i < 4; i++)
       newPop.push_back(population[i]);
 
     while (newPop.size() < AGENTS_PER_GEN) {
@@ -135,7 +136,7 @@ public:
       if (parentIdx >= AGENTS_PER_GEN)
         parentIdx = 0;
       Genome child = population[parentIdx];
-      child.mutate(0.15f);
+      child.mutate(0.20f); // Mutación más agresiva (20%)
       child.fitness = 0;
       newPop.push_back(child);
     }
@@ -184,11 +185,11 @@ class $modify(AIPlayLayer, PlayLayer) {
     CCScheduler::get()->setTimeScale(
         manager->isWinningRun ? 1.0f : manager->currentSpeed);
 
-    auto label = CCLabelBMFont::create("Cargando...", "bigFont.fnt");
-    auto winSize = CCDirector::get()->getWinSize();
-    label->setPosition({5.0f, winSize.height - 5.0f});
+    // Creamos el label
+    auto label = CCLabelBMFont::create("Inicializando...", "bigFont.fnt");
+    label->setPosition({5.0f, CCDirector::get()->getWinSize().height - 5.0f});
     label->setAnchorPoint({0.0f, 1.0f});
-    label->setScale(0.4f);
+    label->setScale(0.35f);
     label->setZOrder(1000);
 
     m_fields->infoLabel = label;
@@ -202,36 +203,8 @@ class $modify(AIPlayLayer, PlayLayer) {
 
   void update(float dt) {
     PlayLayer::update(dt);
-    auto manager = TrainingManager::get();
 
-    if (this->m_player1->m_isDead || manager->deadInThisRun)
-      return;
-
-    // --- ACTUALIZAR HUD ---
-    if (m_fields->infoLabel) {
-      float currentX = this->m_player1->getPositionX();
-      float levelLength =
-          (this->m_levelLength > 0.0f) ? this->m_levelLength : 1000.0f;
-      float currentPct = (currentX / levelLength) * 100.0f;
-      float bestPct = (manager->globalBest / levelLength) * 100.0f;
-      if (bestPct > 100.0f)
-        bestPct = 100.0f;
-      if (currentPct > 100.0f)
-        currentPct = 100.0f;
-
-      if (currentX > manager->globalBest) {
-        manager->globalBest = currentX;
-        bestPct = currentPct;
-      }
-
-      std::string text =
-          fmt::format("Gen: {} | Agent: {}/{}\nSpeed: {}x\nBest: {:.2f}%",
-                      manager->generation, manager->currentAgentIndex + 1,
-                      AGENTS_PER_GEN, (int)manager->currentSpeed, bestPct);
-      m_fields->infoLabel->setString(text.c_str());
-    }
-
-    // --- INPUTS IA ---
+    // --- 1. LÓGICA DE VISIÓN (SE EJECUTA SIEMPRE PARA MOSTRAR DEBUG) ---
     float playerX = this->m_player1->getPositionX();
     float playerY = this->m_player1->getPositionY();
     float distToObstacle = 1000.0f;
@@ -242,10 +215,14 @@ class $modify(AIPlayLayer, PlayLayer) {
       auto obj = typeinfo_cast<GameObject *>(objRef);
       if (!obj)
         continue;
+
       if (obj->getPositionX() > playerX) {
         auto type = obj->getType();
+        // Verificamos Solid (0) y Hazard (2)
         if (type == GameObjectType::Solid || type == GameObjectType::Hazard) {
+
           float dist = obj->getPositionX() - playerX;
+          // Buscamos el más cercano en un rango de 300
           if (dist < distToObstacle && dist < 300.0f) {
             distToObstacle = dist;
             obstacleY = obj->getPositionY();
@@ -254,19 +231,40 @@ class $modify(AIPlayLayer, PlayLayer) {
       }
     }
 
+    // --- 2. ACTUALIZAR HUD (MOVIDO ANTES DEL CHECK DE MUERTE) ---
+    auto manager = TrainingManager::get();
+    if (m_fields->infoLabel) {
+      float levelLength =
+          (this->m_levelLength > 0.0f) ? this->m_levelLength : 1000.0f;
+      float bestPct = (manager->globalBest / levelLength) * 100.0f;
+      if (bestPct > 100.0f)
+        bestPct = 100.0f;
+
+      // Mostramos "Vis" (Vision) para ver si detecta el pincho
+      // Si Vis baja de 1000, es que está viendo algo
+      std::string text = fmt::format(
+          "Gen: {} | Agt: {}/{}\nSpd: {}x | Best: {:.2f}%\nVis: {:.0f}",
+          manager->generation, manager->currentAgentIndex + 1, AGENTS_PER_GEN,
+          (int)manager->currentSpeed, bestPct, distToObstacle);
+      m_fields->infoLabel->setString(text.c_str());
+    }
+
+    // Si está muerto, cortamos aquí (pero ya actualizamos el texto)
+    if (this->m_player1->m_isDead || manager->deadInThisRun)
+      return;
+
+    // --- 3. INPUTS IA ---
     std::vector<float> inputs = {
         playerY / 1000.0f, distToObstacle / 500.0f, obstacleY / 1000.0f,
         (float)this->m_player1->m_yVelocity / 20.0f, 1.0f};
 
     float output = manager->getCurrentBrain().predict(inputs);
 
-    // ZONA SEGURA DE INPUT: Si acabamos de spawnear, NO presionar nada
-    // Esto evita que la IA salte aleatoriamente contra un techo al iniciar
-    if (playerX > 10.0f) {
-      if (output > 0.0f)
-        this->m_player1->pushButton(PlayerButton::Jump);
-      else
-        this->m_player1->releaseButton(PlayerButton::Jump);
+    // --- 4. ACCIÓN (SIN RESTRICCIÓN DE INICIO) ---
+    if (output > 0.0f) {
+      this->m_player1->pushButton(PlayerButton::Jump);
+    } else {
+      this->m_player1->releaseButton(PlayerButton::Jump);
     }
   }
 
@@ -275,11 +273,7 @@ class $modify(AIPlayLayer, PlayLayer) {
 
     if (player == this->m_player1) {
 
-      // --- PROTECCIÓN MÁXIMA DE INICIO ---
-      // Si el jugador está a menos de 30 bloques del inicio (aprox 1 segundo de
-      // juego), PROHIBIMOS que el mod reinicie. Dejamos que el juego haga su
-      // muerte normal. Esto garantiza que el usuario pueda "entrar" al nivel
-      // sin quedar atrapado.
+      // Protección de inicio: dejar morir normalmente si x < 30
       if (player->getPositionX() < 30.0f) {
         PlayLayer::destroyPlayer(player, object);
         return;
