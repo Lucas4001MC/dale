@@ -80,6 +80,7 @@ public:
   float currentSpeed = 1.0f;
   bool isWinningRun = false;
   float globalBest = 0.0f;
+  bool deadInThisRun = false;
 
   static TrainingManager *get() {
     static TrainingManager instance;
@@ -97,6 +98,7 @@ public:
     generation = 1;
     globalBest = 0.0f;
     isWinningRun = false;
+    deadInThisRun = false;
   }
 
   Genome &getCurrentBrain() {
@@ -125,7 +127,6 @@ public:
                      population[0].fitness);
 
     std::vector<Genome> newPop;
-
     for (int i = 0; i < 5; i++)
       newPop.push_back(population[i]);
 
@@ -133,13 +134,11 @@ public:
       int parentIdx = (int)randomFloat(0, 15);
       if (parentIdx >= AGENTS_PER_GEN)
         parentIdx = 0;
-
       Genome child = population[parentIdx];
       child.mutate(0.15f);
       child.fitness = 0;
       newPop.push_back(child);
     }
-
     population = newPop;
     currentAgentIndex = 0;
     generation++;
@@ -180,10 +179,12 @@ class $modify(AIPlayLayer, PlayLayer) {
     if (manager->population.empty())
       manager->initPopulation();
 
+    manager->deadInThisRun = false;
+
     CCScheduler::get()->setTimeScale(
         manager->isWinningRun ? 1.0f : manager->currentSpeed);
 
-    auto label = CCLabelBMFont::create("Cargando IA...", "bigFont.fnt");
+    auto label = CCLabelBMFont::create("Cargando...", "bigFont.fnt");
     auto winSize = CCDirector::get()->getWinSize();
     label->setPosition({5.0f, winSize.height - 5.0f});
     label->setAnchorPoint({0.0f, 1.0f});
@@ -191,32 +192,28 @@ class $modify(AIPlayLayer, PlayLayer) {
     label->setZOrder(1000);
 
     m_fields->infoLabel = label;
-
-    if (this->m_uiLayer) {
+    if (this->m_uiLayer)
       this->m_uiLayer->addChild(label);
-    } else {
+    else
       this->addChild(label);
-    }
 
     return true;
   }
 
   void update(float dt) {
     PlayLayer::update(dt);
-    if (this->m_player1->m_isDead)
+    auto manager = TrainingManager::get();
+
+    if (this->m_player1->m_isDead || manager->deadInThisRun)
       return;
 
     // --- ACTUALIZAR HUD ---
-    auto manager = TrainingManager::get();
     if (m_fields->infoLabel) {
       float currentX = this->m_player1->getPositionX();
-      // Aseguramos que levelLength sea valido para evitar division por cero
       float levelLength =
           (this->m_levelLength > 0.0f) ? this->m_levelLength : 1000.0f;
-
       float currentPct = (currentX / levelLength) * 100.0f;
       float bestPct = (manager->globalBest / levelLength) * 100.0f;
-
       if (bestPct > 100.0f)
         bestPct = 100.0f;
       if (currentPct > 100.0f)
@@ -228,13 +225,13 @@ class $modify(AIPlayLayer, PlayLayer) {
       }
 
       std::string text =
-          fmt::format("Gen: {} | Agente: {}/{}\nSpeed: {}x\nBest: {:.2f}%",
+          fmt::format("Gen: {} | Agent: {}/{}\nSpeed: {}x\nBest: {:.2f}%",
                       manager->generation, manager->currentAgentIndex + 1,
                       AGENTS_PER_GEN, (int)manager->currentSpeed, bestPct);
       m_fields->infoLabel->setString(text.c_str());
     }
 
-    // --- LÓGICA IA ---
+    // --- INPUTS IA ---
     float playerX = this->m_player1->getPositionX();
     float playerY = this->m_player1->getPositionY();
     float distToObstacle = 1000.0f;
@@ -245,7 +242,6 @@ class $modify(AIPlayLayer, PlayLayer) {
       auto obj = typeinfo_cast<GameObject *>(objRef);
       if (!obj)
         continue;
-
       if (obj->getPositionX() > playerX) {
         auto type = obj->getType();
         if (type == GameObjectType::Solid || type == GameObjectType::Hazard) {
@@ -264,49 +260,52 @@ class $modify(AIPlayLayer, PlayLayer) {
 
     float output = manager->getCurrentBrain().predict(inputs);
 
-    if (output > 0.0f) {
-      this->m_player1->pushButton(PlayerButton::Jump);
-    } else {
-      this->m_player1->releaseButton(PlayerButton::Jump);
+    // ZONA SEGURA DE INPUT: Si acabamos de spawnear, NO presionar nada
+    // Esto evita que la IA salte aleatoriamente contra un techo al iniciar
+    if (playerX > 10.0f) {
+      if (output > 0.0f)
+        this->m_player1->pushButton(PlayerButton::Jump);
+      else
+        this->m_player1->releaseButton(PlayerButton::Jump);
     }
   }
 
-  // --- FIX CRÍTICO DEL BUCLE ---
   void destroyPlayer(PlayerObject *player, GameObject *object) {
     auto manager = TrainingManager::get();
 
-    // Verificamos que sea nuestro jugador
     if (player == this->m_player1) {
 
-      // PROTECCIÓN: Si el jugador muere nada más nacer (x < 10),
-      // es un bug de carga o spawn kill.
-      // IGNORAMOS la lógica de la IA y dejamos que el juego haga un respawn
-      // normal.
-      if (player->getPositionX() < 10.0f) {
+      // --- PROTECCIÓN MÁXIMA DE INICIO ---
+      // Si el jugador está a menos de 30 bloques del inicio (aprox 1 segundo de
+      // juego), PROHIBIMOS que el mod reinicie. Dejamos que el juego haga su
+      // muerte normal. Esto garantiza que el usuario pueda "entrar" al nivel
+      // sin quedar atrapado.
+      if (player->getPositionX() < 30.0f) {
         PlayLayer::destroyPlayer(player, object);
         return;
       }
 
-      // Si es un intento válido:
-      if (manager->isWinningRun) {
-        manager->isWinningRun = false;
-        CCScheduler::get()->setTimeScale(manager->currentSpeed);
-        this->resetLevel();
+      if (manager->deadInThisRun) {
+        PlayLayer::destroyPlayer(player, object);
         return;
       }
 
-      // Guardar progreso
-      float distance = player->getPositionX();
-      manager->getCurrentBrain().fitness = distance;
+      manager->deadInThisRun = true;
 
-      if (distance > manager->globalBest) {
-        manager->globalBest = distance;
+      if (manager->isWinningRun) {
+        manager->isWinningRun = false;
+        CCScheduler::get()->setTimeScale(manager->currentSpeed);
+        Loader::get()->queueInMainThread([this] { this->resetLevel(); });
+        return;
       }
 
-      // Siguiente agente
+      float distance = player->getPositionX();
+      manager->getCurrentBrain().fitness = distance;
+      if (distance > manager->globalBest)
+        manager->globalBest = distance;
+
       manager->nextAgent();
 
-      // Reiniciar nivel de forma segura
       Loader::get()->queueInMainThread([this] { this->resetLevel(); });
       return;
     }
@@ -318,8 +317,8 @@ class $modify(AIPlayLayer, PlayLayer) {
     auto manager = TrainingManager::get();
     if (!manager->isWinningRun) {
       manager->isWinningRun = true;
-      manager->globalBest = this->m_levelLength;
-
+      manager->globalBest =
+          (this->m_levelLength > 0) ? this->m_levelLength : 1000.0f;
       Loader::get()->queueInMainThread([this] { this->resetLevel(); });
       return;
     }
