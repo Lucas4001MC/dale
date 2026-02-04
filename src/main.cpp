@@ -6,7 +6,6 @@ using namespace geode::prelude;
 
 // --- ESTRUCTURA DE LA RED NEURONAL ---
 struct SimpleNet {
-  // Pesos: [Y Jugador, Distancia, Y Obstaculo, Velocidad, Bias]
   std::vector<float> weights = {0.6f, -0.3f, 0.9f, 0.2f, -0.1f};
 
   float feedForward(const std::vector<float> &inputs) {
@@ -36,7 +35,7 @@ class $modify(AIPlayLayer, PlayLayer) {
       return false;
 
     AIManager::get()->isTraining = true;
-    geode::log::info("IA Iniciada: Modo Seguro (Solid + Hazard)");
+    geode::log::info("IA Iniciada. Esperando...");
     return true;
   }
 
@@ -60,17 +59,12 @@ class $modify(AIPlayLayer, PlayLayer) {
 
       if (obj->getPositionX() > playerX) {
 
-        // --- CORRECCIÓN FINAL ---
-        // En Geode v4:
-        // Solid = Bloques (0)
-        // Hazard = Pinchos, Sierras, Dragones, etc (2)
         auto type = obj->getType();
-
+        // 0=Solid, 2=Hazard (Geode v4 mapping)
         if (type == GameObjectType::Solid || type == GameObjectType::Hazard) {
 
           float dist = obj->getPositionX() - playerX;
 
-          // Rango de visión de 250 bloques
           if (dist < distToObstacle && dist < 250.0f) {
             distToObstacle = dist;
             obstacleY = obj->getPositionY();
@@ -92,11 +86,22 @@ class $modify(AIPlayLayer, PlayLayer) {
     }
   }
 
+  // --- AQUÍ ESTÁ EL FIX DEL BUCLE ---
   void destroyPlayer(PlayerObject *player, GameObject *object) {
+    // Verificamos 3 cosas para reiniciar:
+    // 1. Es el Player 1
+    // 2. La IA está activa
+    // 3. El jugador ha avanzado al menos 10 bloques (ESTO EVITA EL BUCLE)
     if (player == this->m_player1 && AIManager::get()->isTraining) {
-      this->resetLevel();
-      return;
+
+      if (player->getPositionX() > 10.0f) {
+        this->resetLevel();
+        return;
+      }
+      // Si muere en X < 10, dejamos que el juego haga su muerte normal
+      // para evitar reinicios infinitos durante la carga.
     }
+
     PlayLayer::destroyPlayer(player, object);
   }
 };
