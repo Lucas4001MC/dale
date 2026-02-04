@@ -6,7 +6,7 @@ using namespace geode::prelude;
 
 // --- ESTRUCTURA DE LA RED NEURONAL ---
 struct SimpleNet {
-  // Pesos ajustados ligeramente para favorecer saltar pinchos
+  // Pesos: [Y Jugador, Distancia, Y Obstaculo, Velocidad, Bias]
   std::vector<float> weights = {0.6f, -0.3f, 0.9f, 0.2f, -0.1f};
 
   float feedForward(const std::vector<float> &inputs) {
@@ -18,7 +18,6 @@ struct SimpleNet {
   }
 };
 
-// --- SINGLETON ---
 class AIManager {
 public:
   static AIManager *get() {
@@ -30,7 +29,6 @@ public:
   bool isTraining = false;
 };
 
-// --- EL MOD ---
 class $modify(AIPlayLayer, PlayLayer) {
 
   bool init(GJGameLevel *level, bool useReplay, bool dontCreateObjects) {
@@ -38,7 +36,7 @@ class $modify(AIPlayLayer, PlayLayer) {
       return false;
 
     AIManager::get()->isTraining = true;
-    geode::log::info("IA V4 Iniciada: Detectando Obstaculos Reales");
+    geode::log::info("IA Iniciada: Modo Seguro (Solid + Hazard)");
     return true;
   }
 
@@ -54,33 +52,25 @@ class $modify(AIPlayLayer, PlayLayer) {
     float distToObstacle = 1000.0f;
     float obstacleY = 0.0f;
 
-    // --- BUCLE INTELIGENTE ---
     CCObject *objRef;
     CCARRAY_FOREACH(this->m_objects, objRef) {
       auto obj = typeinfo_cast<GameObject *>(objRef);
       if (!obj)
         continue;
 
-      // Solo nos importan los objetos DELANTE del jugador
       if (obj->getPositionX() > playerX) {
 
-        // --- AQUI ESTA LA MAGIA: FILTRO POR TIPO ---
-        // Usamos el Enum GameObjectType para saber qué es cada cosa
-        // 7 = Spike, 0 = Solid (Bloques), 8 = Hazard (Sierras, etc)
-        // Nota: Usamos comparacion de Enums o ints directos si el enum varia
-
+        // --- CORRECCIÓN FINAL ---
+        // En Geode v4:
+        // Solid = Bloques (0)
+        // Hazard = Pinchos, Sierras, Dragones, etc (2)
         auto type = obj->getType();
-        bool isDangerous = false;
 
-        if (type == GameObjectType::Spike || type == GameObjectType::Solid ||
-            type == GameObjectType::Hazard || type == GameObjectType::Monster) {
-          isDangerous = true;
-        }
+        if (type == GameObjectType::Solid || type == GameObjectType::Hazard) {
 
-        if (isDangerous) {
           float dist = obj->getPositionX() - playerX;
 
-          // Buscamos el peligro mas cercano (rango de vision 250 bloques)
+          // Rango de visión de 250 bloques
           if (dist < distToObstacle && dist < 250.0f) {
             distToObstacle = dist;
             obstacleY = obj->getPositionY();
@@ -89,12 +79,10 @@ class $modify(AIPlayLayer, PlayLayer) {
       }
     }
 
-    // INPUTS
     std::vector<float> inputs = {playerY / 1000.0f, distToObstacle / 500.0f,
                                  obstacleY / 1000.0f,
                                  (float)this->m_player1->m_yVelocity, 1.0f};
 
-    // DECISIÓN
     float output = AIManager::get()->currentBrain.feedForward(inputs);
 
     if (output > 0.5f) {
