@@ -1,39 +1,45 @@
-#include "GeneticAlgorithm.hpp"
 #include <Geode/Geode.hpp>
 #include <Geode/modify/PlayLayer.hpp>
-
+#include <vector>
 
 using namespace geode::prelude;
 
-// Global AI Manager
-ai::PopulationManager *g_popManager = nullptr;
-CCLabelBMFont *g_statusLabel = nullptr;
-bool g_initialized = false;
+// --- ESTRUCTURA DE LA RED NEURONAL ---
+struct SimpleNet {
+  std::vector<float> weights = {0.5f, -0.2f, 0.8f, 0.1f, -0.5f};
 
-// Helper to initialize AI if needed
-void initAI() {
-  if (!g_initialized) {
-    // Topology: 5 Inputs -> 8 Hidden -> 8 Hidden -> 1 Output
-    std::vector<int> topology = {5, 8, 8, 1};
-    g_popManager = new ai::PopulationManager(50, topology);
-    g_initialized = true;
-    log::info("AI Initialized with Population 50");
+  float feedForward(const std::vector<float> &inputs) {
+    float sum = 0.0f;
+    for (size_t i = 0; i < inputs.size() && i < weights.size(); ++i) {
+      sum += inputs[i] * weights[i];
+    }
+    return sum;
   }
-}
+};
 
+// --- SINGLETON PARA GESTIONAR LA IA ---
+class AIManager {
+public:
+  static AIManager *get() {
+    static AIManager instance;
+    return &instance;
+  }
+
+  SimpleNet currentBrain;
+  bool isTraining = false;
+};
+
+// --- MODIFICACIÓN DEL JUEGO (HOOKS) ---
 class $modify(AIPlayLayer, PlayLayer) {
+
   bool init(GJGameLevel *level, bool useReplay, bool dontCreateObjects) {
     if (!PlayLayer::init(level, useReplay, dontCreateObjects))
       return false;
 
-    initAI();
+    AIManager::get()->isTraining = true;
 
-    // Label for stats
-    auto winSize = CCDirector::sharedDirector()->getWinSize();
-    g_statusLabel = CCLabelBMFont::create("Gen: 1 | Agent: 1", "bigFont.fnt");
-    g_statusLabel->setPosition(winSize.width / 2, winSize.height - 20);
-    g_statusLabel->setScale(0.5f);
-    this->addChild(g_statusLabel, 1000);
+    // Mensaje de consola para confirmar que el mod cargó
+    geode::log::info("IA Iniciada: Esperando inputs...");
 
     return true;
   }
@@ -41,104 +47,58 @@ class $modify(AIPlayLayer, PlayLayer) {
   void update(float dt) {
     PlayLayer::update(dt);
 
-    if (!g_popManager || this->m_isPaused)
+    if (!AIManager::get()->isTraining || this->m_player1->m_isDead)
       return;
 
-    // 1. Get Game State
-    auto player = this->m_player1;
-    if (!player)
-      return;
+    // 1. OBTENER DATOS (INPUTS)
+    float playerX = this->m_player1->getPositionX();
+    float playerY = this->m_player1->getPositionY();
 
-    double pY = player->getPositionY();
-    double pVelY = player->m_yVelocity;
+    float distToObstacle = 1000.0f;
+    float obstacleY = 0.0f;
 
-    // 2. Obstacle Detection
-    GameObject *nearestObj = nullptr;
-    double minDst = 99999.0;
-
-    // Iterate m_objects (CCArray) using older Geode (v4) macro
-    // Iterating manually since we need to check object positions
+    // --- BUCLE COMPATIBLE CON GEODE V4 ---
     CCObject *objRef;
     CCARRAY_FOREACH(this->m_objects, objRef) {
       auto obj = typeinfo_cast<GameObject *>(objRef);
       if (!obj)
         continue;
 
-      // Only care about objects in front
-      double dx = obj->getPositionX() - player->getPositionX();
-      if (dx > 0 && dx < minDst) {
-        minDst = dx;
-        nearestObj = obj;
+      // Filtro simple: Objetos peligrosos delante del jugador
+      if (obj->m_hazard && obj->getPositionX() > playerX) {
+        float dist = obj->getPositionX() - playerX;
+        if (dist < distToObstacle) {
+          distToObstacle = dist;
+          obstacleY = obj->getPositionY();
+        }
       }
     }
 
-    double objDist = 0;
-    double objY = 0;
-    double objType = 0; // 0 = None, 1 = Hazard/Solid
+    // 2. INPUTS PARA LA RED
+    std::vector<float> inputs = {
+        playerY / 1000.0f, distToObstacle / 500.0f, obstacleY / 1000.0f,
+        (float)this->m_player1
+            ->m_yVelocity, // En v4 a veces es m_yVelocity directamente
+        1.0f};
 
-    if (nearestObj) {
-      objDist = minDst;
-      objY = nearestObj->getPositionY();
-      objType = 1.0;
+    // 3. DECISIÓN
+    float output = AIManager::get()->currentBrain.feedForward(inputs);
+
+    // --- CORRECCIÓN CRÍTICA AQUI ---
+    // Usamos m_player1 y el Enum PlayerButton::Jump
+    if (output > 0.5f) {
+      this->m_player1->pushButton(PlayerButton::Jump);
     } else {
-      objDist = 2000.0; // Far away
-    }
-
-    // 3. Normalize Inputs
-    std::vector<double> inputs = {pY / 1000.0, pVelY / 20.0, objDist / 1000.0,
-                                  objY / 1000.0, objType};
-
-    // 4. Feed Forward
-    ai::Agent &currentAgent = g_popManager->getCurrentAgent();
-    std::vector<double> outputs = currentAgent.brain.feedForward(inputs);
-
-    // 5. Act
-    // Geode v4 / standard PlayLayer logic
-    // pushButton(int button, bool isPlayer1)
-    if (outputs[0] > 0.5) {
-      this->pushButton(0, true);
-    } else {
-      this->releaseButton(0, true);
+      this->m_player1->releaseButton(PlayerButton::Jump);
     }
   }
 
   void destroyPlayer(PlayerObject *player, GameObject *object) {
-    // Hook death to record fitness and switch agent
+    if (player == this->m_player1 && AIManager::get()->isTraining) {
+      // Reiniciar nivel instantáneamente
+      this->resetLevel();
+      return;
+    }
     PlayLayer::destroyPlayer(player, object);
-
-    if (!g_popManager)
-      return;
-
-    // Only care about P1 death
-    if (player != this->m_player1)
-      return;
-
-    // Calculate Fitness: Distance traveled
-    // Player X is a good metric.
-    float fitness = player->getPositionX();
-    g_popManager->getCurrentAgent().fitness = fitness;
-    g_popManager->getCurrentAgent().dead = true;
-
-    log::info("Agent {} died. Fitness: {}", g_popManager->currentAgentIndex + 1,
-              fitness);
-
-    // Move to next
-    g_popManager->nextAgent();
-
-    if (g_popManager->isGenerationFinished()) {
-      log::info("Generation {} finished. Evolving...",
-                g_popManager->generation);
-      g_popManager->evolve();
-    }
-
-    // Update Label
-    if (g_statusLabel) {
-      std::string text = fmt::format(
-          "Gen: {} | Agent: {} | Best: {:.0f}", g_popManager->generation,
-          g_popManager->currentAgentIndex + 1, g_popManager->bestFitness);
-      g_statusLabel->setString(text.c_str());
-    }
-
-    this->resetLevel();
   }
 };
