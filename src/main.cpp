@@ -40,17 +40,15 @@ struct Genome {
     std::vector<float> hiddenOutputs;
     int wIdx = 0;
 
-    // Capa Oculta
     for (int i = 0; i < HIDDEN_NODES; i++) {
       float sum = 0.0f;
       for (int j = 0; j < INPUT_NODES; j++) {
         sum += inputs[j] * weights[wIdx++];
       }
-      sum += weights[wIdx++];                     // Bias
-      hiddenOutputs.push_back(sum > 0 ? sum : 0); // ReLU
+      sum += weights[wIdx++];
+      hiddenOutputs.push_back(sum > 0 ? sum : 0);
     }
 
-    // Capa Salida
     float outputSum = 0.0f;
     for (int i = 0; i < HIDDEN_NODES; i++) {
       outputSum += hiddenOutputs[i] * weights[wIdx++];
@@ -81,8 +79,6 @@ public:
   int generation = 1;
   float currentSpeed = 1.0f;
   bool isWinningRun = false;
-
-  // Mejor fitness histórico
   float globalBest = 0.0f;
 
   static TrainingManager *get() {
@@ -125,16 +121,14 @@ public:
       globalBest = population[0].fitness;
     }
 
-    geode::log::info("Gen {} Finalizada. Best Fitness: {}", generation,
+    geode::log::info("Gen {} Finalizada. Best: {}", generation,
                      population[0].fitness);
 
     std::vector<Genome> newPop;
 
-    // Elitismo: Top 5
     for (int i = 0; i < 5; i++)
       newPop.push_back(population[i]);
 
-    // Reproducción
     while (newPop.size() < AGENTS_PER_GEN) {
       int parentIdx = (int)randomFloat(0, 15);
       if (parentIdx >= AGENTS_PER_GEN)
@@ -189,7 +183,7 @@ class $modify(AIPlayLayer, PlayLayer) {
     CCScheduler::get()->setTimeScale(
         manager->isWinningRun ? 1.0f : manager->currentSpeed);
 
-    auto label = CCLabelBMFont::create("Cargando...", "bigFont.fnt");
+    auto label = CCLabelBMFont::create("Cargando IA...", "bigFont.fnt");
     auto winSize = CCDirector::get()->getWinSize();
     label->setPosition({5.0f, winSize.height - 5.0f});
     label->setAnchorPoint({0.0f, 1.0f});
@@ -212,26 +206,22 @@ class $modify(AIPlayLayer, PlayLayer) {
     if (this->m_player1->m_isDead)
       return;
 
-    // --- ACTUALIZAR HUD CON PORCENTAJE ---
+    // --- ACTUALIZAR HUD ---
     auto manager = TrainingManager::get();
     if (m_fields->infoLabel) {
-
       float currentX = this->m_player1->getPositionX();
-      float levelLength = this->m_levelLength; // Geode expone esto
-      if (levelLength == 0)
-        levelLength = 1.0f; // Evitar división por cero
+      // Aseguramos que levelLength sea valido para evitar division por cero
+      float levelLength =
+          (this->m_levelLength > 0.0f) ? this->m_levelLength : 1000.0f;
 
-      // Calcular porcentajes
       float currentPct = (currentX / levelLength) * 100.0f;
       float bestPct = (manager->globalBest / levelLength) * 100.0f;
 
-      // Limitar a 100% visualmente
       if (bestPct > 100.0f)
         bestPct = 100.0f;
       if (currentPct > 100.0f)
         currentPct = 100.0f;
 
-      // Actualizar GlobalBest si superamos el record ahora mismo
       if (currentX > manager->globalBest) {
         manager->globalBest = currentX;
         bestPct = currentPct;
@@ -281,10 +271,23 @@ class $modify(AIPlayLayer, PlayLayer) {
     }
   }
 
+  // --- FIX CRÍTICO DEL BUCLE ---
   void destroyPlayer(PlayerObject *player, GameObject *object) {
     auto manager = TrainingManager::get();
 
+    // Verificamos que sea nuestro jugador
     if (player == this->m_player1) {
+
+      // PROTECCIÓN: Si el jugador muere nada más nacer (x < 10),
+      // es un bug de carga o spawn kill.
+      // IGNORAMOS la lógica de la IA y dejamos que el juego haga un respawn
+      // normal.
+      if (player->getPositionX() < 10.0f) {
+        PlayLayer::destroyPlayer(player, object);
+        return;
+      }
+
+      // Si es un intento válido:
       if (manager->isWinningRun) {
         manager->isWinningRun = false;
         CCScheduler::get()->setTimeScale(manager->currentSpeed);
@@ -292,6 +295,7 @@ class $modify(AIPlayLayer, PlayLayer) {
         return;
       }
 
+      // Guardar progreso
       float distance = player->getPositionX();
       manager->getCurrentBrain().fitness = distance;
 
@@ -299,11 +303,14 @@ class $modify(AIPlayLayer, PlayLayer) {
         manager->globalBest = distance;
       }
 
+      // Siguiente agente
       manager->nextAgent();
 
+      // Reiniciar nivel de forma segura
       Loader::get()->queueInMainThread([this] { this->resetLevel(); });
       return;
     }
+
     PlayLayer::destroyPlayer(player, object);
   }
 
@@ -311,8 +318,7 @@ class $modify(AIPlayLayer, PlayLayer) {
     auto manager = TrainingManager::get();
     if (!manager->isWinningRun) {
       manager->isWinningRun = true;
-      manager->globalBest =
-          this->m_levelLength; // Setear best al final del nivel
+      manager->globalBest = this->m_levelLength;
 
       Loader::get()->queueInMainThread([this] { this->resetLevel(); });
       return;
