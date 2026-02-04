@@ -56,18 +56,19 @@ class $modify(AIPlayLayer, PlayLayer) {
     GameObject *nearestObj = nullptr;
     double minDst = 99999.0;
 
-    // Iterate m_objects (CCArray) using Geode v5 CCArrayExt
-    if (this->m_objects) {
-      for (auto obj : CCArrayExt<GameObject *>(this->m_objects)) {
-        if (!obj)
-          continue;
+    // Iterate m_objects (CCArray) using older Geode (v4) macro
+    // Iterating manually since we need to check object positions
+    CCObject *objRef;
+    CCARRAY_FOREACH(this->m_objects, objRef) {
+      auto obj = typeinfo_cast<GameObject *>(objRef);
+      if (!obj)
+        continue;
 
-        // Only care about objects in front
-        double dx = obj->getPositionX() - player->getPositionX();
-        if (dx > 0 && dx < minDst) {
-          minDst = dx;
-          nearestObj = obj;
-        }
+      // Only care about objects in front
+      double dx = obj->getPositionX() - player->getPositionX();
+      if (dx > 0 && dx < minDst) {
+        minDst = dx;
+        nearestObj = obj;
       }
     }
 
@@ -92,10 +93,12 @@ class $modify(AIPlayLayer, PlayLayer) {
     std::vector<double> outputs = currentAgent.brain.feedForward(inputs);
 
     // 5. Act
+    // Geode v4 / standard PlayLayer logic
+    // pushButton(int button, bool isPlayer1)
     if (outputs[0] > 0.5) {
-      this->m_player1->pushButton(PlayerButton::Jump);
+      this->pushButton(0, true);
     } else {
-      this->m_player1->releaseButton(PlayerButton::Jump);
+      this->releaseButton(0, true);
     }
   }
 
